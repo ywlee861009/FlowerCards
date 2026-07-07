@@ -11,7 +11,7 @@
 | # | 항목 | 결정 | 근거 |
 |---|---|---|---|
 | 1 | 렌더링 | **Jetpack Compose + Canvas** | UI(HUD/오버레이/모달)와 게임 보드를 한 프레임워크로 처리. 화투 게임 수준의 렌더링 부하는 Compose로 충분하며 개발 속도·유지보수 유리. (overview §6 미결정 해소) |
-| 2 | 모듈 구조 | **2모듈**: `:domain`(순수 Kotlin JVM) + `:app`(Android/Compose) | 룰·점수 엔진을 Android 의존성 0으로 격리 → JVM 단위 테스트 고속 실행, UI 교체에도 로직 불변 |
+| 2 | 모듈 구조 | **계층형 멀티모듈**: `:domain`(순수 Kotlin JVM) + `:data` + `:feature:game` + `:app` | 룰·점수 엔진을 Android 의존성 0으로 격리하고, 앱 진입점·게임 UI·데이터 경계를 분리해 Phase 2 이후 확장 비용을 낮춤 |
 | 3 | 손맛·사운드 훅 | 도메인이 **`GameEvent` sealed class 스트림을 방출** | rules §7 AC "특수 상황 발생 시 사운드/햅틱 트리거 훅 호출" 충족. UI/사운드 레이어는 이벤트 구독만 하면 됨. game-loop §5 트리거 표와 1:1 대응 |
 | 4 | 룰 파라미터화 | 확정 룰 13건을 **`RuleSet` 객체 필드**로 (기본값 = 확정값) | 지역 룰 변형 대비. 로직에 하드코딩 금지 |
 | 5 | minSdk / targetSdk | **26** / 35 | 국내 커버리지 99%+ 확보 + SoundPool/햅틱 API 안정 |
@@ -42,7 +42,7 @@ rules.md ⚠️ 8건 + scoring.md ⚠️ 5건을 문서 기본값(제안)대로 
 
 ```
 android/
-  settings.gradle.kts            # :app, :domain
+  settings.gradle.kts            # :app, :domain, :data, :feature:game
   gradle/libs.versions.toml
   domain/                        # 순수 Kotlin JVM — Android 의존성 0
     src/main/kotlin/com/flowercards/domain/
@@ -53,9 +53,25 @@ android/
       engine/     # GameState, TurnEngine(상태머신), GameEvent
       score/      # ScoreCalculator, 배수(피박/광박/흔들기/폭탄), 고 가산, 고박 정산
     src/test/kotlin/...          # 수용 기준 기반 단위 테스트
-  app/                           # Android 앱 (Compose)
+  data/                          # Android data layer
+    src/main/kotlin/com/flowercards/data/
+      GameRepository.kt          # 저장/복원/리플레이 등 데이터 경계
+      InMemoryGameRepository.kt  # Phase 2 전까지 쓰는 임시 구현
+  feature/
+    game/                        # Android feature module (Compose)
+      src/main/kotlin/com/flowercards/feature/game/
+        GameRoute.kt             # Phase 1: 게임 화면 placeholder, Phase 2 보드 UI 진입점
+  app/                           # Android 앱 shell
     src/main/kotlin/com/flowercards/app/
-      MainActivity.kt            # Phase 1: 빈 Compose 화면 placeholder
+      MainActivity.kt            # 앱 진입점. feature route만 호출
+```
+
+의존성 방향:
+
+```
+:app -> :feature:game
+:feature:game -> :domain
+:data -> :domain
 ```
 
 ## 4. 단계별 로드맵

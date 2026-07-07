@@ -21,4 +21,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "FlowerCards"
 include(":app")
+include(":data")
 include(":domain")
+include(":feature:game")
