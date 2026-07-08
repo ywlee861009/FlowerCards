@@ -41,10 +41,13 @@ android {
 
 dependencies {
     implementation(project(":feature:game"))
+    implementation(project(":feature:setting"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.material3)
 
     testImplementation(libs.junit)
 }
