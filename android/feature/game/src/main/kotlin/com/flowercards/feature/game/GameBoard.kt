@@ -2,7 +2,9 @@ package com.flowercards.feature.game
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -49,6 +51,7 @@ import com.flowercards.domain.engine.GamePhase
 import com.flowercards.domain.engine.PlayerAction
 import com.flowercards.domain.engine.PlayerId
 import com.flowercards.domain.model.Card
+import com.flowercards.domain.model.CardKind
 import com.flowercards.feature.game.render.CARD_ASPECT
 import com.flowercards.feature.game.render.CARD_BACK_ID
 import com.flowercards.feature.game.render.CardBack
@@ -87,14 +90,29 @@ fun GameBoard(
     var handBandRect by remember { mutableStateOf<Rect?>(null) }
     // 흔들기 무장 상태(§4.7): 켠 뒤 해당 월 카드를 내면 declareShake=true로 전달.
     var shakeArmed by remember { mutableStateOf(false) }
+    // 매칭 후보 2장(종류 다름) 선택 대기
+    var pendingMatch by remember { mutableStateOf<PendingMatch?>(null) }
     val shakeAmpPx = with(LocalDensity.current) { 6.dp.toPx() }
 
     val playCard: (Card, Card?) -> Unit = { card, choice ->
         val declareShake = shakeArmed && card.month in uiState.activeShakeableMonths
-        onAction(PlayerAction.PlayCard(card, floorChoice = choice, declareShake = declareShake))
+        val matches = uiState.floor.filter { it.month == card.month }
+        // 같은 월 2장 & 종류(kind)가 달라 획득/점수가 갈릴 때만 사용자 선택 팝업 (그 외는 자동)
+        if (matches.size == 2 && matches.map { it.kind }.toSet().size > 1) {
+            pendingMatch = PendingMatch(card, matches, declareShake)
+        } else {
+            onAction(PlayerAction.PlayCard(card, floorChoice = choice, declareShake = declareShake))
+        }
         shakeArmed = false
     }
     val highlightMonths = if (shakeArmed) uiState.activeShakeableMonths else emptySet()
+
+    // 새 판 진입 시 보드 로컬 상태(무장/매칭 팝업)를 초기화한다 — 잔여 무장이 새 판에 새지 않게.
+    val startNewGame: () -> Unit = {
+        shakeArmed = false
+        pendingMatch = null
+        onNewGame()
+    }
 
     Box(modifier.fillMaxSize().background(BoardGreen)) {
         // 화면 shake(뻑/폭탄)는 보드 본체에만 적용 — 오버레이 플래시는 별개.
@@ -169,7 +187,7 @@ fun GameBoard(
                 onToggleShake = { shakeArmed = !shakeArmed },
                 onBomb = { month -> onAction(PlayerAction.PlayBomb(month)) },
                 onPlayFirstCard = { uiState.activeHand.firstOrNull()?.let { onAction(PlayerAction.PlayCard(it)) } },
-                onNewGame = onNewGame,
+                onNewGame = startNewGame,
                 onOpenSettings = onOpenSettings,
                 modifier = Modifier.fillMaxWidth().weight(0.07f),
             )
@@ -191,16 +209,90 @@ fun GameBoard(
             )
         }
 
-        // 이벤트→시각 반응(플래시/스탬프 트리거/토스트/버스트) + 고·스톱 모달 + 결과 최소표시.
+        // 이벤트→시각 반응(플래시/스탬프 트리거/토스트/버스트) + 고·스톱 모달 + 결과 화면.
         BoardEffectsLayer(
             events = events,
             uiState = uiState,
             floorCoords = floorCoords,
             effects = effects,
             onAction = onAction,
-            onNewGame = onNewGame,
+            onNewGame = startNewGame,
         )
+
+        // 매칭 후보 선택 팝업(종류 다른 2장) — 선택 전까지 카드는 아직 손패에 있다(취소 안전).
+        pendingMatch?.let { pm ->
+            MatchChoicePopup(
+                card = pm.card,
+                candidates = pm.candidates,
+                cardImages = cardImages,
+                onPick = { picked ->
+                    onAction(PlayerAction.PlayCard(pm.card, floorChoice = picked, declareShake = pm.declareShake))
+                    pendingMatch = null
+                },
+                onCancel = { pendingMatch = null },
+            )
+        }
     }
+}
+
+/** 종류가 다른 바닥 2장 중 어느 것을 먹을지 사용자가 고르는 대기 상태. */
+private data class PendingMatch(
+    val card: Card,
+    val candidates: List<Card>,
+    val declareShake: Boolean,
+)
+
+@Composable
+private fun MatchChoicePopup(
+    card: Card,
+    candidates: List<Card>,
+    cardImages: Map<String, ImageBitmap?>,
+    onPick: (Card) -> Unit,
+    onCancel: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xAA000000))
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onCancel() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .background(Color(0xFF1F2937), RoundedCornerShape(16.dp))
+                .border(1.dp, GoMarkerColor, RoundedCornerShape(16.dp))
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {} // 패널 내부 탭이 취소로 새지 않게
+                .padding(18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                "가져갈 ${card.month.koreanName}(${card.month.number}월) 선택",
+                color = Color.White,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                candidates.forEach { candidate ->
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.clickable { onPick(candidate) },
+                    ) {
+                        CardFace(candidate, cardImages[candidate.id], Modifier.size(width = 58.dp, height = 94.dp))
+                        Text(kindLabel(candidate.kind), color = MintText, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun kindLabel(kind: CardKind): String = when (kind) {
+    CardKind.GWANG -> "광"
+    CardKind.YEOL -> "열끗"
+    CardKind.TTI -> "띠"
+    CardKind.PI -> "피"
 }
 
 @Composable

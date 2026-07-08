@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -215,8 +214,8 @@ fun BoardEffectsLayer(
                 onStop = { onAction(PlayerAction.DeclareStop) },
             )
         }
-        // 판 종료 최소 표시(임시) — 정식 결과 화면은 2-E
-        uiState.result?.let { ResultBanner(it, onNewGame) }
+        // 판 종료 3조건 수렴 → 결과 화면 (2-E)
+        uiState.result?.let { ResultScreen(it, onNewGame) }
     }
 }
 
@@ -390,29 +389,112 @@ private fun androidx.compose.foundation.layout.BoxScope.GoStopModal(
     }
 }
 
-// -------------------------------------------------------------- 판 종료 최소 표시(임시)
+// -------------------------------------------------------------- 판 종료 결과 화면 (2-E)
 
+/**
+ * 최소 결과 화면 (PLAN-phase2 §8): 승자/무승부 + 최종 점수 내역 + [다시하기].
+ * 카타르시스 연출·타이틀·일시정지는 Phase 5 범위 — 여기서는 최소 정보 표시만.
+ */
 @Composable
-private fun androidx.compose.foundation.layout.BoxScope.ResultBanner(result: GameResult, onNewGame: () -> Unit) {
+private fun androidx.compose.foundation.layout.BoxScope.ResultScreen(result: GameResult, onNewGame: () -> Unit) {
     val progress = remember { Animatable(0f) }
     LaunchedEffect(Unit) { progress.animateTo(1f, tween(RESULT_FADE_MS)) }
-    val label = when (result) {
-        is GameResult.Win -> "${result.winner.name} 승 · ${result.score.total}점"
-        is GameResult.ChongtongWin -> "총통! ${result.winner.name} · ${result.score}점"
-        GameResult.Nagari -> "나가리 (무승부)"
-    }
+
+    // 결과 화면은 하단 조작을 막는다(스크림).
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color(0xCC000000))
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
+    )
     Column(
         modifier = Modifier
             .align(Alignment.Center)
-            .wrapContentSize()
+            .fillMaxWidth(0.86f)
             .alpha(progress.value)
-            .background(Color(0xCC000000), RoundedCornerShape(14.dp))
-            .padding(horizontal = 24.dp, vertical = 18.dp),
+            .background(Color(0xFF1F2937), RoundedCornerShape(18.dp))
+            .border(1.dp, GoldGlow, RoundedCornerShape(18.dp))
+            .padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text(label, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black)
-        Text("(임시 표시 — 정식 결과는 다음 단계)", color = Color(0xFF9CA3AF), fontSize = 11.sp)
-        Button(onClick = onNewGame) { Text("다시하기") }
+        val title = when (result) {
+            is GameResult.Win -> "${result.winner.name} 승"
+            is GameResult.ChongtongWin -> "총통! ${result.winner.name} 승"
+            GameResult.Nagari -> "나가리 (무승부)"
+        }
+        Text(title, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Black)
+
+        when (result) {
+            is GameResult.Win -> FinalScoreBreakdown(result.score)
+            is GameResult.ChongtongWin ->
+                Text("손패 같은 월 4장 · 즉시 ${result.score}점", color = Color(0xFFA7F3D0), fontSize = 14.sp)
+            GameResult.Nagari ->
+                Text("승자 없음 · 다음 판으로", color = Color(0xFFA7F3D0), fontSize = 14.sp)
+        }
+
+        Spacer(Modifier.height(4.dp))
+        Button(
+            onClick = onNewGame,
+            colors = ButtonDefaults.buttonColors(containerColor = GoldGlow, contentColor = Color(0xFF1F2937)),
+        ) { Text("다시하기", fontWeight = FontWeight.Bold) }
+    }
+}
+
+@Composable
+private fun FinalScoreBreakdown(fs: com.flowercards.domain.score.FinalScore) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        val base = fs.base
+        val parts = buildList {
+            if (base.gwang > 0) add("광 ${base.gwang}")
+            if (base.yeol > 0) add("열끗 ${base.yeol}")
+            if (base.godori > 0) add("고도리 ${base.godori}")
+            if (base.tti > 0) add("띠 ${base.tti}")
+            if (base.hongDan > 0) add("홍단 ${base.hongDan}")
+            if (base.cheongDan > 0) add("청단 ${base.cheongDan}")
+            if (base.choDan > 0) add("초단 ${base.choDan}")
+            if (base.pi > 0) add("피 ${base.pi}")
+        }
+        ScoreRow("기본 점수", "${base.total}점")
+        if (parts.isNotEmpty()) {
+            Text(parts.joinToString(" · "), color = Color(0xFF9CA3AF), fontSize = 11.sp)
+        }
+        if (fs.goCount > 0) ScoreRow("고 ${fs.goCount}회 적용", "${fs.afterGo}점")
+
+        val baks = buildList {
+            if (fs.piBak) add("피박")
+            if (fs.gwangBak) add("광박")
+            if (fs.meongBak) add("멍박")
+        }
+        if (baks.isNotEmpty()) ScoreRow(baks.joinToString("·") + " 배수", "×2씩")
+        if (fs.shakeBombMultiplier > 1) ScoreRow("흔들기·폭탄", "×${fs.shakeBombMultiplier}")
+        if (fs.goBak) ScoreRow("고박", "상대 고 후 패배")
+
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0x33FFFFFF)))
+        ScoreRow("최종", "${fs.total}점", emphasize = true)
+    }
+}
+
+@Composable
+private fun ScoreRow(label: String, value: String, emphasize: Boolean = false) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            label,
+            color = if (emphasize) GoldGlow else Color.White,
+            fontSize = if (emphasize) 16.sp else 13.sp,
+            fontWeight = if (emphasize) FontWeight.Black else FontWeight.Medium,
+        )
+        Text(
+            value,
+            color = if (emphasize) GoldGlow else Color.White,
+            fontSize = if (emphasize) 16.sp else 13.sp,
+            fontWeight = if (emphasize) FontWeight.Black else FontWeight.SemiBold,
+        )
     }
 }
