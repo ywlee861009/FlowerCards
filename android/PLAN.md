@@ -90,6 +90,13 @@ android/
 
 Phase 경계마다 커밋 + `code-reviewer`/`qa-tester` 서브에이전트 검수를 거친다.
 
+## 5.0 현재 구현 로그
+
+- 2026-07-08: `:feature:setting` 모듈을 추가했다.
+- 2026-07-08: `GameRoute` placeholder에 [설정] 버튼을 추가하고, `MainActivity`에서 `GameRoute` ↔ `SettingRoute` 상태 전환을 연결했다.
+- 2026-07-08: `SettingRoute`에 오픈소스 라이선스 섹션을 추가해 화투 이미지 저작자/출처/라이선스/변경사항 없음을 표시했다.
+- 2026-07-08: `./gradlew :app:assembleDebug` 빌드 성공을 확인했다.
+
 ## 5.1 에셋 라이선스 결정
 
 - 화투 이미지는 Wikimedia Commons의 `SVG Hwatu` 계열을 사용한다.
