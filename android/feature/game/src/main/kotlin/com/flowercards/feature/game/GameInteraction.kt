@@ -79,7 +79,7 @@ class FloorCoordinates {
 @Composable
 fun rememberFloorCoordinates(): FloorCoordinates = remember { FloorCoordinates() }
 
-private data class HandSlot(
+internal data class HandSlot(
     val left: Float,
     val top: Float,
     val width: Float,
@@ -90,7 +90,7 @@ private data class HandSlot(
 }
 
 /** 손패 겹침 슬롯 기하(Layout 배치 & 히트박스 판정 공용). 결정적 순수 함수. */
-private fun computeHandSlots(
+internal fun computeHandSlots(
     width: Int,
     height: Int,
     count: Int,

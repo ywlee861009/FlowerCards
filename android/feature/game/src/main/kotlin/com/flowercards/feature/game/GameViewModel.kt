@@ -57,20 +57,41 @@ class GameViewModel(
         this.seed = seed
         val outcome = Dealer.deal(ruleSet, Random(seed))
         current = outcome.state
-        publish()
         outcome.events.forEach { _events.trySend(it) } // 총통 즉시 종료 등 딜 이벤트
+        autoAdvanceForcedFlips()
+        publish()
     }
 
     /**
-     * 플레이어 행동 적용. 유효하지 않은 단계에서의 호출은 무시한다
-     * (UI가 phase로 1차 가드하지만, 방어적으로 재확인).
+     * 플레이어 행동 적용. 유효하지 않은 단계에서의 호출은 무시한다.
+     * UI가 phase로 1차 가드하지만, 빠른 이중 입력(더블탭 등)이 이미 소비된 상태에
+     * 도달할 수 있으므로 도메인 예외를 삼켜 크래시를 막는다(무효 입력은 무시).
      */
     fun onAction(action: PlayerAction) {
         if (current.phase == GamePhase.FINISHED) return
-        val result = TurnEngine.apply(current, action)
+        val result = runCatching { TurnEngine.apply(current, action) }.getOrNull() ?: return
         current = result.state
-        publish()
         result.events.forEach { _events.trySend(it) }
+        autoAdvanceForcedFlips()
+        publish()
+    }
+
+    /**
+     * 손패가 빈 플레이어의 턴은 도메인 설계상 [PlayerAction.FlipOnly]로만 진행된다
+     * (TurnEngine.canAct: 손패가 비어도 더미가 남으면 그 플레이어에게 턴이 넘어감).
+     * UI엔 낼 카드도 뒤집기 어포던스도 없어 그대로 두면 데드락이므로, 자동으로 뒤집기를
+     * 연쇄 적용한다. 더미(pile)가 매 회 감소하므로 반드시 종료한다.
+     * 뒤집기 결과가 고/스톱 대기(AWAITING_GO_STOP)나 종료를 유발하면 루프가 멈춰 입력을 기다린다.
+     */
+    private fun autoAdvanceForcedFlips() {
+        while (current.phase == GamePhase.AWAITING_PLAY &&
+            current.currentPlayer.hand.isEmpty() &&
+            current.pile.isNotEmpty()
+        ) {
+            val result = runCatching { TurnEngine.apply(current, PlayerAction.FlipOnly) }.getOrNull() ?: break
+            current = result.state
+            result.events.forEach { _events.trySend(it) }
+        }
     }
 
     private fun publish() {
