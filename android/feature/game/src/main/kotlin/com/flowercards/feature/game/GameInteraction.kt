@@ -74,6 +74,8 @@ class FloorCoordinates {
     val cardRects = mutableStateMapOf<String, Rect>()
     /** 월 그룹 중심(뻑 스탬프·따조 버스트 등 월 단위 오버레이 앵커) */
     val groupCenters = mutableStateMapOf<Month, androidx.compose.ui.geometry.Offset>()
+    /** 각 플레이어 획득 더미(CapturedStrip) 중심(root px) — 카드 플레이 획득 비행 도착점. */
+    val capturedStripCenters = mutableStateMapOf<PlayerId, androidx.compose.ui.geometry.Offset>()
 }
 
 @Composable
@@ -130,7 +132,7 @@ fun InteractiveHand(
     enabled: Boolean,
     floorCoords: FloorCoordinates,
     floorCards: List<Card>,
-    onPlay: (card: Card, floorChoice: Card?) -> Unit,
+    onPlay: (card: Card, floorChoice: Card?, fromCenter: Offset) -> Unit,
     modifier: Modifier = Modifier,
     highlightMonths: Set<Month> = emptySet(),
 ) {
@@ -191,16 +193,18 @@ fun InteractiveHand(
                 val slot = slots[idx]
                 val cardCenterRoot = handOrigin.value +
                     Offset(slot.centerX, slot.centerY) + drag.value + Offset(0f, -liftPx)
+                // 탭 분기용: 드래그 없이 놓은 슬롯 중심의 root 좌표(연출 시작점).
+                val slotCenterRoot = handOrigin.value + Offset(slot.centerX, slot.centerY)
                 val region = floorCoords.region
                 when {
                     region != null && region.contains(cardCenterRoot) -> {
                         val choice = chooseFloorTarget(card, floorCards, floorCoords, cardCenterRoot)
                         selected.value = null; drag.value = Offset.Zero
-                        onPlay(card, choice)
+                        onPlay(card, choice, cardCenterRoot)
                     }
                     totalDrag.getDistance() < tapSlopPx -> {
                         selected.value = null; drag.value = Offset.Zero
-                        onPlay(card, null) // 탭 = 확정(자동 대상)
+                        onPlay(card, null, slotCenterRoot) // 탭 = 확정(자동 대상)
                     }
                     else -> {
                         val from = drag.value
@@ -295,7 +299,7 @@ fun PassAndPlayOverlay(
     floorCards: List<Card>,
     canPlay: Boolean,
     bandRectInRoot: Rect,
-    onPlay: (card: Card, floorChoice: Card?) -> Unit,
+    onPlay: (card: Card, floorChoice: Card?, fromCenter: Offset) -> Unit,
     modifier: Modifier = Modifier,
     highlightMonths: Set<Month> = emptySet(),
 ) {

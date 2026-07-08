@@ -1,7 +1,9 @@
 package com.flowercards.feature.game
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -34,9 +36,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -49,6 +55,8 @@ import com.flowercards.domain.engine.GamePhase
 import com.flowercards.domain.engine.GameResult
 import com.flowercards.domain.engine.PlayerAction
 import com.flowercards.domain.engine.PlayerId
+import com.flowercards.domain.model.Card
+import com.flowercards.feature.game.render.CARD_ASPECT
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
@@ -63,6 +71,15 @@ private const val BANNER_MS = 950
 private const val PI_FLIGHT_MS = 620
 private const val RESULT_FADE_MS = 500
 
+// 카드 플레이 연출 타이밍(ms) — 사용자 확정값(Phase 4 game-feel 확정 전 상수화).
+private const val PLAY_SLIDE_MS = 180   // ① 릴리스 지점 → 매칭 바닥패로 미끄러짐
+private const val PLAY_HOLD_MS = 180    // ② '탁' 붙은 뒤 짧은 정지
+private const val PLAY_FLY_MS = 280     // ③ 획득 시 낸 카드+먹힌 패가 획득 더미로 비행
+private const val PLAY_HOLD_END = PLAY_SLIDE_MS + PLAY_HOLD_MS          // 360
+private const val PLAY_FLY_END = PLAY_HOLD_END + PLAY_FLY_MS            // 640
+// 바닥 카드 높이 추정(FloorBand cardH = maxHeight * 0.46f). 매칭 rect가 없을 때만 폴백.
+private const val FLOOR_CARD_H_RATIO = 0.46f
+
 private val RedFlash = Color(0xFFEF4444)
 private val OrangeFlash = Color(0xFFF97316)
 private val GoldGlow = Color(0xFFFBBF24)
@@ -76,6 +93,20 @@ private data class ToastFx(override val id: Long, val text: String, val color: C
 private data class BurstFx(override val id: Long, val text: String, val anchor: Offset) : TransientEffect
 private data class BannerFx(override val id: Long, val text: String) : TransientEffect
 private data class PiFlightFx(override val id: Long, val from: Offset, val to: Offset) : TransientEffect
+
+/**
+ * 실제 카드 페이스가 나는 비행 연출(카드 플레이). [keyframes]는 (시각ms, root위치) 목록으로,
+ * 현재 시각을 감싸는 두 키프레임 사이를 보간해 배치한다. PiFlightFx 패턴 확장(그 쪽은 피 마커).
+ * board와 같은 패키지에서 enqueue하므로 internal.
+ */
+internal data class CardFlightFx(
+    override val id: Long,
+    val image: ImageBitmap?,
+    val keyframes: List<Pair<Int, Offset>>,
+    val totalMs: Int,
+    val widthPx: Float,
+    val heightPx: Float,
+) : TransientEffect
 
 /** 오버레이 효과 상태(단일 소유자: board 최상위 remember). */
 class GameEffectsState {
@@ -114,6 +145,87 @@ class GameEffectsState {
 
 @Composable
 fun rememberGameEffects(): GameEffectsState = remember { GameEffectsState() }
+
+/**
+ * 손패 플레이 연출을 enqueue한다. **반드시 onAction 호출 "직전"에** 부른다
+ * (onAction이 상태를 갱신하면 floorCoords가 프루닝되어 좌표가 사라지므로 순서가 중요).
+ *
+ * 연출: 낸 카드가 [fromCenter](릴리스 지점)에서 매칭 바닥패 위치(mid)로 미끄러져 붙고(①),
+ * 짧게 멈춘 뒤(②), 획득이 발생한 경우 낸 카드 + 먹힌 바닥패들이 획득 더미로 날아간다(③).
+ * 매칭이 없으면 ①만.
+ *
+ * 좌표가 하나라도 없으면(레이아웃 전 등) 안전하게 연출을 건너뛴다(크래시/오배치 방지).
+ *
+ * 범위: **손패 플레이 경로 전용**. 자동 뒤집기(FlipOnly) 캡처 연출은 이번 범위 밖.
+ * 획득 캡처셋은 "같은 월" 그룹 기준 근사 — 따닥/보너스 정밀 도메인 캡처셋은 반영하지 않는다.
+ */
+internal fun enqueueCardFlight(
+    effects: GameEffectsState,
+    floorCoords: FloorCoordinates,
+    uiState: GameUiState,
+    card: Card,
+    choice: Card?,
+    fromCenter: Offset,
+    cardImages: Map<String, ImageBitmap?>,
+) {
+    // 매칭 대상: 명시 선택(choice) 우선, 없으면 같은 월 단일 카드.
+    val floorSameMonth = uiState.floor.filter { it.month == card.month }
+    val matchCard = choice ?: floorSameMonth.singleOrNull()
+
+    // 착지 지점 mid: 매칭 카드 rect 중심 → 월 그룹 중심 → 바닥 영역 중심. 없으면 skip.
+    val mid = matchCard?.let { floorCoords.cardRects[it.id]?.center }
+        ?: floorCoords.groupCenters[card.month]
+        ?: floorCoords.region?.center
+        ?: return
+
+    // 착지 카드 크기(px): 매칭 rect size → 바닥 카드 크기 추정.
+    val matchRect = matchCard?.let { floorCoords.cardRects[it.id] }
+    val landW = matchRect?.size?.width
+        ?: floorCoords.region?.let { it.height * FLOOR_CARD_H_RATIO * CARD_ASPECT }
+        ?: return
+    val landH = matchRect?.size?.height ?: (landW / CARD_ASPECT)
+
+    // 획득 여부: 같은 월 바닥패가 하나라도 있으면 획득으로 간주(월 그룹 근사).
+    val captured = floorSameMonth.isNotEmpty()
+    val stripCenter = floorCoords.capturedStripCenters[uiState.activePlayer]
+    val willFly = captured && stripCenter != null
+
+    // 낸 카드: [릴리스→mid(미끄러짐)] → [mid 홀드] → (획득 시) [mid→더미(비행)]
+    val playedKeyframes = buildList {
+        add(0 to fromCenter)
+        add(PLAY_SLIDE_MS to mid)
+        add(PLAY_HOLD_END to mid)
+        if (willFly) add(PLAY_FLY_END to stripCenter!!)
+    }
+    effects.transients.add(
+        CardFlightFx(
+            id = effects.nextId(),
+            image = cardImages[card.id],
+            keyframes = playedKeyframes,
+            totalMs = if (willFly) PLAY_FLY_END else PLAY_HOLD_END,
+            widthPx = landW,
+            heightPx = landH,
+        ),
+    )
+
+    // 먹힌 바닥패들: 붙기+홀드 동안 제자리 → 이후 더미로 비행.
+    if (willFly) {
+        floorSameMonth.forEach { floorCard ->
+            val rect = floorCoords.cardRects[floorCard.id]
+            val pos = rect?.center ?: mid
+            effects.transients.add(
+                CardFlightFx(
+                    id = effects.nextId(),
+                    image = cardImages[floorCard.id],
+                    keyframes = listOf(0 to pos, PLAY_HOLD_END to pos, PLAY_FLY_END to stripCenter!!),
+                    totalMs = PLAY_FLY_END,
+                    widthPx = rect?.size?.width ?: landW,
+                    heightPx = rect?.size?.height ?: landH,
+                ),
+            )
+        }
+    }
+}
 
 /**
  * 이벤트→시각 반응 오버레이 (PLAN-phase2 §7). `events`(1회성)만 구독해 비파괴로 얹는다.
@@ -228,7 +340,75 @@ private fun androidx.compose.foundation.layout.BoxScope.TransientView(fx: Transi
         is BurstFx -> BurstView(fx.text, fx.anchor, onDone)
         is BannerFx -> BannerView(fx.text, onDone)
         is PiFlightFx -> PiFlightView(fx.from, fx.to, onDone)
+        is CardFlightFx -> CardFlightView(fx, onDone)
     }
+}
+
+/**
+ * 실제 카드 페이스 비행 뷰. clock(0→totalMs)을 선형 tween으로 돌리고, 현재 시각을
+ * 감싸는 두 키프레임 사이를 보간(모션 구간은 ease-out 감속)해 [Modifier.offset]으로 배치한다.
+ * 카드 크기는 착지(바닥) 크기로 고정 — 스펙의 손패→바닥 크기 모핑은 미구현(아래 보고 참조).
+ */
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.CardFlightView(fx: CardFlightFx, onDone: () -> Unit) {
+    val clock = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        // clock 자체는 선형 — 키프레임 시각(ms)을 그대로 보존. 감속은 구간 보간에서.
+        clock.animateTo(fx.totalMs.toFloat(), tween(fx.totalMs, easing = LinearEasing))
+        onDone()
+    }
+    val t = clock.value
+    val pos = interpolateKeyframes(fx.keyframes, t)
+    val halfW = fx.widthPx / 2f
+    val halfH = fx.heightPx / 2f
+    val density = LocalDensity.current
+    val wDp = with(density) { fx.widthPx.toDp() }
+    val hDp = with(density) { fx.heightPx.toDp() }
+    // 마지막 15%에서만 살짝 페이드(1 → 0.55) — 실제 카드 위로 자연 소멸.
+    val fadeStart = fx.totalMs * 0.85f
+    val alphaVal = if (t < fadeStart) {
+        1f
+    } else {
+        (1f - 0.45f * ((t - fadeStart) / (fx.totalMs - fadeStart))).coerceIn(0f, 1f)
+    }
+    val shape = RoundedCornerShape(6.dp)
+    Box(
+        modifier = Modifier
+            .offset { IntOffset((pos.x - halfW).roundToInt(), (pos.y - halfH).roundToInt()) }
+            .graphicsLayer { alpha = alphaVal }
+            .size(width = wDp, height = hDp)
+            .shadow(4.dp, shape)
+            .clip(shape)
+            .background(Color.White, shape),
+    ) {
+        if (fx.image != null) {
+            Image(
+                bitmap = fx.image,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit,
+            )
+        }
+    }
+}
+
+/** 키프레임(시각ms→root위치) 목록에서 [t] 시각의 위치를 구한다. 모션 구간은 ease-out 감속. */
+private fun interpolateKeyframes(keyframes: List<Pair<Int, Offset>>, t: Float): Offset {
+    if (keyframes.isEmpty()) return Offset.Zero
+    if (t <= keyframes.first().first) return keyframes.first().second
+    if (t >= keyframes.last().first) return keyframes.last().second
+    for (i in 0 until keyframes.size - 1) {
+        val (t0, p0) = keyframes[i]
+        val (t1, p1) = keyframes[i + 1]
+        if (t >= t0 && t <= t1) {
+            val span = (t1 - t0).toFloat()
+            if (span <= 0f) return p1
+            val fLin = (t - t0) / span
+            val f = 1f - (1f - fLin) * (1f - fLin) // ease-out(감속): '탁' 붙기/착지감
+            return Offset(p0.x + (p1.x - p0.x) * f, p0.y + (p1.y - p0.y) * f)
+        }
+    }
+    return keyframes.last().second
 }
 
 @Composable

@@ -97,13 +97,16 @@ fun GameBoard(
     var pendingMatch by remember { mutableStateOf<PendingMatch?>(null) }
     val shakeAmpPx = with(LocalDensity.current) { 6.dp.toPx() }
 
-    val playCard: (Card, Card?) -> Unit = { card, choice ->
+    val playCard: (Card, Card?, androidx.compose.ui.geometry.Offset) -> Unit = { card, choice, fromCenter ->
         val declareShake = shakeArmed && card.month in uiState.activeShakeableMonths
         val matches = uiState.floor.filter { it.month == card.month }
         // 같은 월 2장 & 종류(kind)가 달라 획득/점수가 갈릴 때만 사용자 선택 팝업 (그 외는 자동)
         if (matches.size == 2 && matches.map { it.kind }.toSet().size > 1) {
-            pendingMatch = PendingMatch(card, matches, declareShake)
+            // 팝업 확정 시 동일 연출을 내려면 릴리스 지점(fromCenter)을 보관했다가 쓴다.
+            pendingMatch = PendingMatch(card, matches, declareShake, fromCenter)
         } else {
+            // 연출 좌표는 반드시 onAction 전에 캡처(상태 갱신 시 floorCoords 프루닝됨).
+            enqueueCardFlight(effects, floorCoords, uiState, card, choice, fromCenter, cardImages)
             onAction(PlayerAction.PlayCard(card, floorChoice = choice, declareShake = declareShake))
         }
         shakeArmed = false
@@ -138,7 +141,8 @@ fun GameBoard(
                 score = uiState.oppScore,
                 goMarker = uiState.activePlayer == PlayerId.P2 && uiState.activeCanGo,
                 cardImages = cardImages,
-                modifier = Modifier.fillMaxWidth().weight(0.09f),
+                modifier = Modifier.fillMaxWidth().weight(0.09f)
+                    .onGloballyPositioned { floorCoords.capturedStripCenters[PlayerId.P2] = it.boundsInRoot().center },
             )
             HandBackRow(
                 count = uiState.oppHandCount,
@@ -158,7 +162,8 @@ fun GameBoard(
                 score = uiState.myScore,
                 goMarker = uiState.activePlayer == PlayerId.P1 && uiState.activeCanGo,
                 cardImages = cardImages,
-                modifier = Modifier.fillMaxWidth().weight(0.10f),
+                modifier = Modifier.fillMaxWidth().weight(0.10f)
+                    .onGloballyPositioned { floorCoords.capturedStripCenters[PlayerId.P1] = it.boundsInRoot().center },
             )
             Box(
                 modifier = Modifier
@@ -230,6 +235,7 @@ fun GameBoard(
                 candidates = pm.candidates,
                 cardImages = cardImages,
                 onPick = { picked ->
+                    enqueueCardFlight(effects, floorCoords, uiState, pm.card, picked, pm.fromCenter, cardImages)
                     onAction(PlayerAction.PlayCard(pm.card, floorChoice = picked, declareShake = pm.declareShake))
                     pendingMatch = null
                 },
@@ -244,6 +250,7 @@ private data class PendingMatch(
     val card: Card,
     val candidates: List<Card>,
     val declareShake: Boolean,
+    val fromCenter: androidx.compose.ui.geometry.Offset,
 )
 
 @Composable
