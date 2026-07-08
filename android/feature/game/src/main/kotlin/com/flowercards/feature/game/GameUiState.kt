@@ -10,8 +10,7 @@ import com.flowercards.domain.model.Month
 import com.flowercards.domain.score.ScoreCalculator
 
 /**
- * 획득패 카테고리별 장수 집계 (rules §1: 광·열끗·띠·피).
- * 점수가 아니라 "몇 장 모았나"의 뷰용 집계다 — 스트립 배지에 그대로 쓴다.
+ * 획득패 카테고리별 장수 집계 (rules §1: 광·열끗·띠·피). 배지 표기용.
  */
 data class CapturedSummary(
     val gwang: Int = 0,
@@ -23,48 +22,65 @@ data class CapturedSummary(
 }
 
 /**
- * 도메인 [GameState]의 뷰 투영 모델 (PLAN-phase2 §3).
+ * 획득패를 카테고리별 카드 리스트로 보관 (2-C: 획득 스트립을 실제 카드 이미지 겹침으로 렌더, game-loop §2).
+ */
+data class CapturedCards(
+    val gwang: List<Card> = emptyList(),
+    val yeol: List<Card> = emptyList(),
+    val tti: List<Card> = emptyList(),
+    val pi: List<Card> = emptyList(),
+)
+
+/**
+ * 도메인 [GameState]의 뷰 투영 모델 (PLAN-phase2 §3, 2-C 갱신).
  *
- * 도메인을 Compose에 그대로 넘기지 않고 투영한다 → 획득패 카테고리 집계·고 가능 여부·
- * 흔들기/폭탄 가능 월 계산 같은 뷰 로직을 여기서 흡수한다.
- *
- * **관점(perspective)**: 좌석 고정 — 하단 = [PlayerId.P1] (상단 = P2, Phase 3에서 AI 투입).
- * [myHand]/[myCaptured]/[myScore]는 항상 P1의 것이고, [oppHandCount] 등은 P2의 것이다.
- * [turn]은 지금 누구 차례인지를 표시용으로 노출한다(hotseat 교대 가시화).
+ * **좌석 고정**: 하단 = P1, 상단 = P2. `my*`(P1)·`opp*`(P2)는 좌석 기준이다.
+ * **상호작용**: hotseat이므로 실제 조작 대상은 현재 턴 플레이어 → `active*`로 별도 투영한다.
+ * (Phase 3에서 P2=AI가 되면 P2 턴의 패스앤플레이 계층만 제거하면 된다.)
  */
 data class GameUiState(
+    // ---- 좌석 고정 (P1 하단 / P2 상단) ----
     val myHand: List<Card> = emptyList(),
     val oppHandCount: Int = 0,
     val floor: List<Card> = emptyList(),
     val pileCount: Int = 0,
     val myCaptured: CapturedSummary = CapturedSummary(),
     val oppCaptured: CapturedSummary = CapturedSummary(),
-    /** 지금 조작 주체 (hotseat: 이 플레이어가 곧 myHand의 주인) */
-    val turn: PlayerId = PlayerId.P1,
-    val phase: GamePhase = GamePhase.AWAITING_PLAY,
+    val myCapturedCards: CapturedCards = CapturedCards(),
+    val oppCapturedCards: CapturedCards = CapturedCards(),
     val myScore: Int = 0,
     val oppScore: Int = 0,
-    /** 현재 턴 플레이어가 스톱 임계(기본 3점) 이상인지 — 고/스톱 대상 여부 */
-    val canGo: Boolean = false,
-    /** 흔들기 가능 월: 손패 같은 월 3장 이상 보유 (rules §4.7) */
-    val shakeableMonths: Set<Month> = emptySet(),
-    /** 폭탄 가능 월: 손패 같은 월 3장 + 바닥 정확히 1장 (rules §4.7) */
-    val bombableMonths: Set<Month> = emptySet(),
+    // ---- 진행 상태 ----
+    val turn: PlayerId = PlayerId.P1,
+    val phase: GamePhase = GamePhase.AWAITING_PLAY,
     val result: GameResult? = null,
-)
+    // ---- turn 기준 (상호작용/액션바/고 판정) ----
+    val activePlayer: PlayerId = PlayerId.P1,
+    val activeHand: List<Card> = emptyList(),
+    /** 현재 턴 플레이어가 스톱 임계(기본 3점) 이상인지 */
+    val activeCanGo: Boolean = false,
+    /** 현재 턴 플레이어 흔들기 가능 월: 손패 같은 월 3장 이상 (rules §4.7) */
+    val activeShakeableMonths: Set<Month> = emptySet(),
+    /** 현재 턴 플레이어 폭탄 가능 월: 손패 같은 월 3장 + 바닥 정확히 1장 (rules §4.7) */
+    val activeBombableMonths: Set<Month> = emptySet(),
+) {
+    /** 카드 낼 수 있는 상태 */
+    val canPlay: Boolean
+        get() = phase == GamePhase.AWAITING_PLAY && activeHand.isNotEmpty()
+}
 
 /**
- * [GameState] → [GameUiState] 순수 투영.
+ * [GameState] → [GameUiState] 순수 투영. 좌석 기준(me=P1) + turn 기준(active) 동시 계산.
  *
- * @param me 관점 플레이어. 좌석 고정이므로 ViewModel은 항상 [PlayerId.P1]을 넘긴다.
+ * @param me 좌석 관점 플레이어(하단). ViewModel은 [PlayerId.P1]을 넘긴다.
  */
 fun GameState.toUiState(me: PlayerId): GameUiState {
     val myState = player(me)
     val oppState = player(me.opponent)
+    val active = player(turn)
 
-    val handMonthCounts: Map<Month, Int> = myState.hand.groupingBy { it.month }.eachCount()
+    val handMonthCounts: Map<Month, Int> = active.hand.groupingBy { it.month }.eachCount()
     val floorMonthCounts: Map<Month, Int> = floor.groupingBy { it.month }.eachCount()
-
     // 흔들기: 손패 같은 월 3장 이상 (TurnEngine: hand.count { month } >= 3)
     val shakeable = handMonthCounts.filterValues { it >= 3 }.keys
     // 폭탄: 손패 같은 월 3장 + 바닥 정확히 1장 (TurnEngine: bombCards.size == 3 && floorMatch.size == 1)
@@ -74,6 +90,7 @@ fun GameState.toUiState(me: PlayerId): GameUiState {
 
     val myScore = ScoreCalculator.baseScore(myState.captured, ruleSet).total
     val oppScore = ScoreCalculator.baseScore(oppState.captured, ruleSet).total
+    val activeScore = ScoreCalculator.baseScore(active.captured, ruleSet).total
 
     return GameUiState(
         myHand = myState.hand,
@@ -82,14 +99,18 @@ fun GameState.toUiState(me: PlayerId): GameUiState {
         pileCount = pile.size,
         myCaptured = myState.captured.toCapturedSummary(),
         oppCaptured = oppState.captured.toCapturedSummary(),
-        turn = turn,
-        phase = phase,
+        myCapturedCards = myState.captured.toCapturedCards(),
+        oppCapturedCards = oppState.captured.toCapturedCards(),
         myScore = myScore,
         oppScore = oppScore,
-        canGo = myScore >= ruleSet.stopThreshold,
-        shakeableMonths = shakeable,
-        bombableMonths = bombable,
+        turn = turn,
+        phase = phase,
         result = result,
+        activePlayer = turn,
+        activeHand = active.hand,
+        activeCanGo = activeScore >= ruleSet.stopThreshold,
+        activeShakeableMonths = shakeable,
+        activeBombableMonths = bombable,
     )
 }
 
@@ -108,3 +129,10 @@ private fun List<Card>.toCapturedSummary(): CapturedSummary {
     }
     return CapturedSummary(gwang = gwang, yeol = yeol, tti = tti, pi = pi)
 }
+
+private fun List<Card>.toCapturedCards(): CapturedCards = CapturedCards(
+    gwang = filter { it.kind == CardKind.GWANG },
+    yeol = filter { it.kind == CardKind.YEOL },
+    tti = filter { it.kind == CardKind.TTI },
+    pi = filter { it.kind == CardKind.PI },
+)

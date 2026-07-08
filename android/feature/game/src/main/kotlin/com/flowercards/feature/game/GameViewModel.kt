@@ -73,17 +73,6 @@ class GameViewModel(
         result.events.forEach { _events.trySend(it) }
     }
 
-    /**
-     * 2-A 디버그 전용 입력 경로. 표시 관점은 P1 고정([uiState])이지만, hotseat 교대를 눈으로
-     * 검증하려면 turn==P2일 때도 진행돼야 한다 → **현재 턴 플레이어**의 손패 첫 장을 낸다.
-     * 정식 손패 터치 입력·P2 패스앤플레이 UX는 2-C에서 대체한다.
-     */
-    fun playFirstCardOfCurrentTurn() {
-        if (current.phase != GamePhase.AWAITING_PLAY) return
-        val first = current.currentPlayer.hand.firstOrNull() ?: return
-        onAction(PlayerAction.PlayCard(first))
-    }
-
     private fun publish() {
         // 좌석 고정: 표시 관점은 항상 하단 = P1
         _uiState.value = current.toUiState(me = PlayerId.P1)

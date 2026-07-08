@@ -16,11 +16,11 @@ import com.flowercards.feature.game.render.rememberCardImages
 private val BoardGreen = Color(0xFF14532D)
 
 /**
- * Phase 2-B 정적 보드 (PLAN-phase2 §4·§5).
+ * Phase 2-C 인게임 보드 (PLAN-phase2 §4·§5·§6).
  *
- * 카드 이미지 49종 프리로드가 끝나면 8밴드 보드를 P1 관점(하단 고정)으로 read-only 렌더한다.
- * 실제 터치/드래그/선택 입력은 2-C, 고·스톱/특수상황 오버레이는 2-D 범위 — 여기서는 만들지 않는다.
- * 액션바의 디버그 버튼(현재 턴 첫 장 내기/새 게임)은 2-A 상태 배선 검증용으로 유지한다.
+ * 카드 이미지 49종 프리로드 후 8밴드 보드를 좌석 고정(P1 하단/P2 상단)으로 렌더하고,
+ * 현재 턴 플레이어 손패의 드래그/탭 입력을 [GameViewModel.onAction]에 배선한다.
+ * 고·스톱 모달/특수상황 오버레이는 2-D, 결과 화면은 2-E 범위 — 여기서는 만들지 않는다.
  */
 @Composable
 fun GameRoute(
@@ -36,7 +36,7 @@ fun GameRoute(
         GameBoard(
             uiState = uiState,
             cardImages = cardImages,
-            onPlayFirstCard = viewModel::playFirstCardOfCurrentTurn,
+            onAction = viewModel::onAction,
             onNewGame = { viewModel.newGame() },
             onOpenSettings = onOpenSettings,
         )
