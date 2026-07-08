@@ -46,26 +46,34 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.flowercards.domain.engine.PlayerId
 import com.flowercards.domain.model.Card
+import com.flowercards.domain.model.Month
 import com.flowercards.feature.game.render.CARD_ASPECT
 import com.flowercards.feature.game.render.CardFace
 import kotlinx.coroutines.launch
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 // 손패 겹침/선택 잠정 수치(§9 리스크 #5: game-feel 확정 전까지 임시값)
 private const val HAND_OVERLAP = 0.42f
 private val HAND_ARC_DP = 10.dp
 private val HAND_LIFT_DP = 26.dp
 private const val HAND_LIFT_SCALE = 1.15f
+private val HAND_HIGHLIGHT_LIFT_DP = 14.dp
+private val HAND_WIGGLE_AMP_DP = 5.dp
+private const val SHAKE_WIGGLE_MS = 480
 private val TAP_SLOP_DP = 12.dp
 // 더미 뒤집기/딜 등장 flip 연출(뒷→앞 절반 회전 리빌). 정식 2면 flip·사운드 동기화는 Phase 4.
 private const val FLIP_START_DEG = 90f
 private const val FLIP_MS = 200
 
-/** 바닥 좌표 레지스트리(root 좌표계). 드래그 드롭 판정·매칭 대상 선택에 사용. */
+/** 바닥 좌표 레지스트리(root 좌표계). 드래그 드롭 판정·매칭 대상·뻑 스탬프 위치에 사용. */
 class FloorCoordinates {
     var region: Rect? by mutableStateOf(null)
     val cardRects = mutableStateMapOf<String, Rect>()
+    /** 월 그룹 중심(뻑 스탬프·따조 버스트 등 월 단위 오버레이 앵커) */
+    val groupCenters = mutableStateMapOf<Month, androidx.compose.ui.geometry.Offset>()
 }
 
 @Composable
@@ -124,16 +132,30 @@ fun InteractiveHand(
     floorCards: List<Card>,
     onPlay: (card: Card, floorChoice: Card?) -> Unit,
     modifier: Modifier = Modifier,
+    highlightMonths: Set<Month> = emptySet(),
 ) {
     val density = LocalDensity.current
     val arcPx = with(density) { HAND_ARC_DP.toPx() }
     val liftPx = with(density) { HAND_LIFT_DP.toPx() }
     val tapSlopPx = with(density) { TAP_SLOP_DP.toPx() }
+    val highlightLiftPx = with(density) { HAND_HIGHLIGHT_LIFT_DP.toPx() }
+    val wiggleAmpPx = with(density) { HAND_WIGGLE_AMP_DP.toPx() }
     val scope = rememberCoroutineScope()
 
     val selected = remember { mutableStateOf<Int?>(null) }
     val drag = remember { mutableStateOf(Offset.Zero) }
     val handOrigin = remember { mutableStateOf(Offset.Zero) }
+
+    // 흔들기 무장 시(§4.7): 해당 월 카드가 들리고, 무장 순간 좌우 흔들림 1회.
+    val wiggle = remember { Animatable(0f) }
+    androidx.compose.runtime.LaunchedEffect(highlightMonths) {
+        if (highlightMonths.isNotEmpty()) {
+            wiggle.snapTo(1f)
+            wiggle.animateTo(0f, animationSpec = tween(SHAKE_WIGGLE_MS))
+        } else {
+            wiggle.snapTo(0f)
+        }
+    }
 
     val gestureModifier = if (enabled) {
         Modifier.pointerInput(hand, floorCards) {
@@ -200,15 +222,25 @@ fun InteractiveHand(
             .then(gestureModifier),
         content = {
             hand.forEachIndexed { i, card ->
+                val highlighted = card.month in highlightMonths
                 Box(
                     Modifier
-                        .zIndex(if (selected.value == i) 1f else 0f)
+                        .zIndex(if (selected.value == i) 1f else if (highlighted) 0.5f else 0f)
                         .graphicsLayer {
-                            if (selected.value == i) {
-                                translationX = drag.value.x
-                                translationY = drag.value.y - liftPx
-                                scaleX = HAND_LIFT_SCALE
-                                scaleY = HAND_LIFT_SCALE
+                            when {
+                                selected.value == i -> {
+                                    translationX = drag.value.x
+                                    translationY = drag.value.y - liftPx
+                                    scaleX = HAND_LIFT_SCALE
+                                    scaleY = HAND_LIFT_SCALE
+                                }
+                                highlighted -> {
+                                    val w = wiggle.value
+                                    val osc = sin(w * PI * 4).toFloat() * w
+                                    translationY = -highlightLiftPx
+                                    translationX = osc * wiggleAmpPx
+                                    rotationZ = osc * 6f
+                                }
                             }
                         },
                 ) {
@@ -265,6 +297,7 @@ fun PassAndPlayOverlay(
     bandRectInRoot: Rect,
     onPlay: (card: Card, floorChoice: Card?) -> Unit,
     modifier: Modifier = Modifier,
+    highlightMonths: Set<Month> = emptySet(),
 ) {
     val density = LocalDensity.current
     // turn/플레이어가 바뀌면 다시 게이트로. 같은 P2 턴 내(연속 턴/고 대기)에는 공개 유지.
@@ -314,6 +347,7 @@ fun PassAndPlayOverlay(
                         floorCards = floorCards,
                         onPlay = onPlay,
                         modifier = Modifier.fillMaxSize().padding(vertical = 6.dp),
+                        highlightMonths = highlightMonths,
                     )
                 }
             }

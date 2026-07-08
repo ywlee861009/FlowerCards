@@ -32,6 +32,16 @@ data class CapturedCards(
 )
 
 /**
+ * 바닥을 월 단위로 묶은 뷰 (2-D: 뻑 스탬프를 올바른 월 더미 위에 앉히기 위함).
+ * @param isPpeok 이 월이 뻑으로 묶였는지 (GameState.ppeokMonths)
+ */
+data class FloorGroup(
+    val month: Month,
+    val cards: List<Card>,
+    val isPpeok: Boolean,
+)
+
+/**
  * 도메인 [GameState]의 뷰 투영 모델 (PLAN-phase2 §3, 2-C 갱신).
  *
  * **좌석 고정**: 하단 = P1, 상단 = P2. `my*`(P1)·`opp*`(P2)는 좌석 기준이다.
@@ -50,6 +60,8 @@ data class GameUiState(
     val oppCapturedCards: CapturedCards = CapturedCards(),
     val myScore: Int = 0,
     val oppScore: Int = 0,
+    // ---- 바닥(월/뻑 그룹) ----
+    val floorGroups: List<FloorGroup> = emptyList(),
     // ---- 진행 상태 ----
     val turn: PlayerId = PlayerId.P1,
     val phase: GamePhase = GamePhase.AWAITING_PLAY,
@@ -57,6 +69,10 @@ data class GameUiState(
     // ---- turn 기준 (상호작용/액션바/고 판정) ----
     val activePlayer: PlayerId = PlayerId.P1,
     val activeHand: List<Card> = emptyList(),
+    /** 현재 턴 플레이어 기본 점수 (고/스톱 모달 표기) */
+    val activeScore: Int = 0,
+    /** 현재 턴 플레이어 누적 고 횟수 */
+    val activeGoCount: Int = 0,
     /** 현재 턴 플레이어가 스톱 임계(기본 3점) 이상인지 */
     val activeCanGo: Boolean = false,
     /** 현재 턴 플레이어 흔들기 가능 월: 손패 같은 월 3장 이상 (rules §4.7) */
@@ -92,6 +108,10 @@ fun GameState.toUiState(me: PlayerId): GameUiState {
     val oppScore = ScoreCalculator.baseScore(oppState.captured, ruleSet).total
     val activeScore = ScoreCalculator.baseScore(active.captured, ruleSet).total
 
+    val groups = floor
+        .groupBy { it.month }
+        .map { (month, cards) -> FloorGroup(month, cards, isPpeok = ppeokMonths.containsKey(month)) }
+
     return GameUiState(
         myHand = myState.hand,
         oppHandCount = oppState.hand.size,
@@ -103,11 +123,14 @@ fun GameState.toUiState(me: PlayerId): GameUiState {
         oppCapturedCards = oppState.captured.toCapturedCards(),
         myScore = myScore,
         oppScore = oppScore,
+        floorGroups = groups,
         turn = turn,
         phase = phase,
         result = result,
         activePlayer = turn,
         activeHand = active.hand,
+        activeScore = activeScore,
+        activeGoCount = active.goCount,
         activeCanGo = activeScore >= ruleSet.stopThreshold,
         activeShakeableMonths = shakeable,
         activeBombableMonths = bombable,

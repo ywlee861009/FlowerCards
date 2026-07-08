@@ -1,6 +1,7 @@
 package com.flowercards.feature.game
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -30,15 +32,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.flowercards.domain.engine.GameEvent
 import com.flowercards.domain.engine.GamePhase
 import com.flowercards.domain.engine.PlayerAction
 import com.flowercards.domain.engine.PlayerId
@@ -48,40 +54,61 @@ import com.flowercards.feature.game.render.CARD_BACK_ID
 import com.flowercards.feature.game.render.CardBack
 import com.flowercards.feature.game.render.CardFace
 import com.flowercards.feature.game.render.OverlappingRow
+import kotlinx.coroutines.flow.Flow
+import kotlin.math.PI
+import kotlin.math.sin
 
 private val BoardGreen = Color(0xFF14532D)
 private val MintText = Color(0xFFA7F3D0)
 private val GoMarkerColor = Color(0xFFF59E0B)
+private val PpeokRed = Color(0xE6B91C1C)
 
 /** 획득 스트립 카드 겹침 비율(피가 많을 때 압축) */
 private const val CAPTURED_OVERLAP = 0.5f
+/** 바닥 월 그룹 내부 겹침 */
+private const val FLOOR_GROUP_OVERLAP = 0.28f
 
 /**
- * 2-C 인게임 보드 (PLAN-phase2 §4·§6). 좌석 고정(P1 하단/P2 상단) + turn 기준 상호작용.
- * P1 턴엔 하단 P1 손패가 드래그 가능. P2 턴엔 [PassAndPlayOverlay]가 게이트→공개→조작을 담당.
+ * 2-D 인게임 보드 (PLAN-phase2 §4·§6·§7). 좌석 고정(P1 하단/P2 상단) + turn 기준 상호작용.
+ * 이벤트→시각 반응은 [BoardEffectsLayer](최상위 오버레이)가 담당한다.
  */
 @Composable
 fun GameBoard(
     uiState: GameUiState,
     cardImages: Map<String, ImageBitmap?>,
+    events: Flow<GameEvent>,
     onAction: (PlayerAction) -> Unit,
     onNewGame: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val floorCoords = rememberFloorCoordinates()
+    val effects = rememberGameEffects()
     var handBandRect by remember { mutableStateOf<Rect?>(null) }
     // 흔들기 무장 상태(§4.7): 켠 뒤 해당 월 카드를 내면 declareShake=true로 전달.
     var shakeArmed by remember { mutableStateOf(false) }
+    val shakeAmpPx = with(LocalDensity.current) { 6.dp.toPx() }
 
     val playCard: (Card, Card?) -> Unit = { card, choice ->
         val declareShake = shakeArmed && card.month in uiState.activeShakeableMonths
         onAction(PlayerAction.PlayCard(card, floorChoice = choice, declareShake = declareShake))
         shakeArmed = false
     }
+    val highlightMonths = if (shakeArmed) uiState.activeShakeableMonths else emptySet()
 
     Box(modifier.fillMaxSize().background(BoardGreen)) {
-        Column(Modifier.fillMaxSize()) {
+        // 화면 shake(뻑/폭탄)는 보드 본체에만 적용 — 오버레이 플래시는 별개.
+        Column(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    val s = effects.shake.value
+                    if (s > 0f) {
+                        translationX = sin(s * PI * 8).toFloat() * shakeAmpPx * s
+                        translationY = sin(s * PI * 6).toFloat() * shakeAmpPx * 0.5f * s
+                    }
+                },
+        ) {
             HudBar(uiState, Modifier.fillMaxWidth().weight(0.06f))
             CapturedStrip(
                 seat = PlayerId.P2,
@@ -94,6 +121,7 @@ fun GameBoard(
             HandBackRow(
                 count = uiState.oppHandCount,
                 backImage = cardImages[CARD_BACK_ID],
+                dim = uiState.turn == PlayerId.P2, // P2 조작 중엔 상단 마커 흐리게(초점=하단 오버레이)
                 modifier = Modifier.fillMaxWidth().weight(0.08f),
             )
             FloorBand(
@@ -110,7 +138,6 @@ fun GameBoard(
                 cardImages = cardImages,
                 modifier = Modifier.fillMaxWidth().weight(0.10f),
             )
-            // 하단 손패 밴드: P1 턴엔 앞면·상호작용, P2 턴엔 뒷면으로 가림(오버레이가 조작).
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -121,11 +148,12 @@ fun GameBoard(
                     InteractiveHand(
                         hand = uiState.myHand,
                         cardImages = cardImages,
-                        enabled = uiState.canPlay && uiState.turn == PlayerId.P1,
+                        enabled = uiState.canPlay,
                         floorCoords = floorCoords,
                         floorCards = uiState.floor,
                         onPlay = playCard,
                         modifier = Modifier.fillMaxSize().padding(vertical = 6.dp),
+                        highlightMonths = highlightMonths,
                     )
                 } else {
                     HandBackRow(
@@ -159,8 +187,19 @@ fun GameBoard(
                 canPlay = uiState.canPlay,
                 bandRectInRoot = rect,
                 onPlay = playCard,
+                highlightMonths = highlightMonths,
             )
         }
+
+        // 이벤트→시각 반응(플래시/스탬프 트리거/토스트/버스트) + 고·스톱 모달 + 결과 최소표시.
+        BoardEffectsLayer(
+            events = events,
+            uiState = uiState,
+            floorCoords = floorCoords,
+            effects = effects,
+            onAction = onAction,
+            onNewGame = onNewGame,
+        )
     }
 }
 
@@ -238,17 +277,17 @@ private fun CategoryGroup(cards: List<Card>, cardImages: Map<String, ImageBitmap
 // -------------------------------------------------------------- 손패(뒷면)
 
 @Composable
-private fun HandBackRow(count: Int, backImage: ImageBitmap?, modifier: Modifier) {
+private fun HandBackRow(count: Int, backImage: ImageBitmap?, modifier: Modifier, dim: Boolean = false) {
     OverlappingRow(
         itemCount = count,
         overlap = 0.55f,
-        modifier = modifier.padding(vertical = 4.dp),
+        modifier = modifier.padding(vertical = 4.dp).alpha(if (dim) 0.35f else 1f),
     ) {
         CardBack(backImage, Modifier)
     }
 }
 
-// -------------------------------------------------------------- 바닥 + 더미
+// -------------------------------------------------------------- 바닥 (월/뻑 그룹) + 더미
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -258,10 +297,11 @@ private fun FloorBand(
     floorCoords: FloorCoordinates,
     modifier: Modifier,
 ) {
-    // 바닥에서 사라진 카드의 좌표는 정리
     LaunchedEffect(uiState.floor) {
         val ids = uiState.floor.mapTo(HashSet()) { it.id }
         floorCoords.cardRects.keys.retainAll(ids)
+        val months = uiState.floorGroups.mapTo(HashSet()) { it.month }
+        floorCoords.groupCenters.keys.retainAll(months)
     }
     Row(
         modifier = modifier.padding(8.dp),
@@ -277,20 +317,12 @@ private fun FloorBand(
             val cardW = cardH * CARD_ASPECT
             FlowRow(
                 modifier = Modifier.fillMaxSize(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                uiState.floor.forEach { card ->
-                    key(card.id) {
-                        FlipInCard(
-                            cardId = card.id,
-                            modifier = Modifier
-                                .height(cardH)
-                                .width(cardW)
-                                .onGloballyPositioned { floorCoords.cardRects[card.id] = it.boundsInRoot() },
-                        ) {
-                            CardFace(card, cardImages[card.id], Modifier.fillMaxSize())
-                        }
+                uiState.floorGroups.forEach { group ->
+                    key(group.month) {
+                        FloorGroupCell(group, cardImages, cardW, cardH, floorCoords)
                     }
                 }
             }
@@ -300,6 +332,57 @@ private fun FloorBand(
             backImage = cardImages[CARD_BACK_ID],
             modifier = Modifier.fillMaxHeight(),
         )
+    }
+}
+
+@Composable
+private fun FloorGroupCell(
+    group: FloorGroup,
+    cardImages: Map<String, ImageBitmap?>,
+    cardW: Dp,
+    cardH: Dp,
+    floorCoords: FloorCoordinates,
+) {
+    val n = group.cards.size
+    val step = cardW * FLOOR_GROUP_OVERLAP
+    val cellW = cardW + step * (n - 1).coerceAtLeast(0)
+    Box(
+        modifier = Modifier
+            .width(cellW)
+            .height(cardH)
+            .onGloballyPositioned { floorCoords.groupCenters[group.month] = it.boundsInRoot().center },
+    ) {
+        group.cards.forEachIndexed { i, card ->
+            key(card.id) {
+                FlipInCard(
+                    cardId = card.id,
+                    modifier = Modifier
+                        .offset(x = step * i)
+                        .size(width = cardW, height = cardH)
+                        .onGloballyPositioned { floorCoords.cardRects[card.id] = it.boundsInRoot() },
+                ) {
+                    CardFace(card, cardImages[card.id], Modifier.fillMaxSize())
+                }
+            }
+        }
+        if (group.isPpeok) {
+            PpeokStamp(Modifier.align(Alignment.Center))
+        }
+    }
+}
+
+/** 뻑 지속 스탬프(§4-3: 판 상태 영향 → 바닥 위 지속 표시). */
+@Composable
+private fun PpeokStamp(modifier: Modifier) {
+    val shape = RoundedCornerShape(4.dp)
+    Box(
+        modifier = modifier
+            .graphicsLayer { rotationZ = -12f }
+            .background(PpeokRed, shape)
+            .border(1.dp, Color.White, shape)
+            .padding(horizontal = 6.dp, vertical = 1.dp),
+    ) {
+        Text("뻑", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black)
     }
 }
 

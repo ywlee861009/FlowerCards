@@ -36,6 +36,7 @@ fun GameRoute(
         GameBoard(
             uiState = uiState,
             cardImages = cardImages,
+            events = viewModel.events,
             onAction = viewModel::onAction,
             onNewGame = { viewModel.newGame() },
             onOpenSettings = onOpenSettings,
